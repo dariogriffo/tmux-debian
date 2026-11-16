@@ -61,8 +61,9 @@ if [ ! -f "$ORIG_TARBALL" ]; then
 
     # The newest file in tmux's own tarball dates it, so rebuilding the
     # orig of a given release gives the same bytes.
-    MTIME="$(tar -tvzf "dl/tmux-${VERSION}.tar.gz" --full-time | awk '{print $4" "$5}' | sort | tail -1)"
-    tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="${MTIME} UTC" \
+    # TZ and --mode keep the host's timezone and umask out of the bytes.
+    MTIME="$(TZ=UTC tar -tvzf "dl/tmux-${VERSION}.tar.gz" --full-time | awk '{print $4" "$5}' | sort | tail -1)"
+    tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w --mtime="${MTIME} UTC" \
         -cf - "$BUILD_DIR" | gzip -n -9 > "$ORIG_TARBALL"
     rm -rf dl "$BUILD_DIR"
     echo "  Saved as $ORIG_TARBALL"

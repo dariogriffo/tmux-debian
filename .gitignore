@@ -1,0 +1,23 @@
+# Build artifacts
+*.deb
+*.dsc
+*.orig.tar.gz
+*.orig-*.tar.gz
+*.debian.tar.xz
+*.buildinfo
+*.changes
+out/
+/t/
+
+# Upstream download / unpack (build_src.sh)
+dl/
+tmux-[0-9]*/
+
+# debian/rules build tree
+debian/ncurses-build/
+debian/ncurses-root/
+debian/ncurses-stamp
+
+# Editors / OS
+.idea/*
+.DS_Store

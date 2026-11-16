@@ -1,0 +1,138 @@
+name: Build tmux for Debian and Ubuntu
+
+on:
+  workflow_dispatch:
+    inputs:
+      tmux_version:
+        description: The tmux version to package (e.g. 3.8).
+        type: string
+        required: true
+      build_version:
+        description: The build (packaging) version.
+        type: string
+        required: true
+      architecture:
+        description: Architecture to build (amd64, arm64, or 'all' for both)
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - 'amd64'
+          - 'arm64'
+
+permissions:
+  contents: write
+
+jobs:
+  build-debian:
+    name: Build (${{ matrix.arch }})
+    # Both architectures build on amd64: arm64 is cross-compiled in the
+    # jammy container (see Dockerfile).
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(inputs.architecture == 'all' && '["amd64","arm64"]' || format('["{0}"]', inputs.architecture)) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tmux-debian
+        uses: actions/checkout@v4
+
+      - name: Validate upstream license permits paid distribution
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./validate_license.sh ${{ inputs.tmux_version }}
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev devscripts wget ca-certificates gpg gpgv
+
+      - name: Build .deb packages
+        run: ./build_debian.sh ${{ inputs.tmux_version }} ${{ inputs.build_version }} ${{ matrix.arch }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.arch }}
+          path: out/tmux_*.deb
+
+  # The build host can't run arm64 binaries, so run the arm64 package on a
+  # native arm64 runner before anything is released: the oldest and newest
+  # suites, the binary launched and a session driven.
+  smoke-arm64:
+    name: Smoke test (arm64, ${{ matrix.image }})
+    needs: build-debian
+    if: inputs.architecture != 'amd64'
+    strategy:
+      matrix:
+        image: ['ubuntu:jammy', 'debian:bookworm', 'ubuntu:resolute', 'debian:sid']
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Download arm64 package
+        uses: actions/download-artifact@v4
+        with:
+          name: artifact-arm64
+          path: debs
+
+      - name: Install and run
+        run: |
+          docker run --rm -v "$PWD/debs:/debs:ro" ${{ matrix.image }} bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq /debs/tmux_*_arm64.deb >/dev/null
+            tmux -V | grep -qx "tmux ${{ inputs.tmux_version }}"
+            ldd /usr/bin/tmux | grep "not found" && exit 1 || true
+            tmux -f /dev/null new -d -s s -x 120 -y 40 "printf \"hello from tmux\\n\"; sleep 30"
+            sleep 1
+            tmux capture-pane -p -t s | grep -q "hello from tmux"
+            tmux display -p "#{version} #{session_name}"
+            tmux kill-server'
+
+  build-src:
+    name: Build Source Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tmux-debian
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev devscripts wget ca-certificates gpg gpgv
+
+      - name: Build source packages
+        run: ./build_src.sh ${{ inputs.tmux_version }} ${{ inputs.build_version }}
+
+      - name: Upload Source Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-artifact
+          path: |
+            tmux_*.dsc
+            tmux_*.orig.tar.gz
+            tmux_*.debian.tar.xz
+
+  release-tmux:
+    name: Release tmux for Debian and Ubuntu
+    if: ${{ !cancelled() && !failure() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    needs: [build-debian, smoke-arm64, build-src]
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifact-*
+          merge-multiple: true
+
+      - name: Download source artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: source-artifact
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          files: |
+            tmux_*.deb
+            tmux_*.dsc
+            tmux_*.orig.tar.gz
+            tmux_*.debian.tar.xz
+          name: ${{ inputs.tmux_version }}+${{ inputs.build_version }}
+          tag_name: ${{ inputs.tmux_version }}+${{ inputs.build_version }}
+          fail_on_unmatched_files: true

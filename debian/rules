@@ -1,0 +1,86 @@
+#!/usr/bin/make -f
+# Build tmux from upstream's release tarball, with ncurses' terminfo library
+# built from the orig-ncurses component and linked in statically.
+#
+# Why a static libtinfo: since ncurses 6.4.20230625, tparm() refuses the
+# capability strings tmux supplies itself (terminal-features: clipboard,
+# cursor colour and style, styled underlines...) unless tmux calls the newer
+# tiparm_s(). bookworm (6.4-4) and jammy (6.3) don't have tiparm_s, the other
+# suites do, so no single build against the system libtinfo works everywhere
+# (Debian's libtinfo6 Breaks tmux << 3.3a-4 for this, #1038269). Linking
+# ncurses 6.6 in gives one binary that has tiparm_s on every suite and still
+# reads each system's own terminfo database.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/default.mk
+
+NC_SRC   := $(CURDIR)/ncurses
+NC_BUILD := $(CURDIR)/debian/ncurses-build
+NC_ROOT  := $(CURDIR)/debian/ncurses-root
+
+%:
+	dh $@
+
+# Only the terminfo library (libtinfo.a) and its headers. The terminfo paths
+# and security switches match Debian's own ncurses build, so tmux finds the
+# same terminal descriptions the system's ncurses would.
+debian/ncurses-stamp:
+	test -f $(NC_SRC)/configure || { echo "ncurses component missing"; exit 1; }
+	mkdir -p $(NC_BUILD)
+	cd $(NC_BUILD) && $(NC_SRC)/configure \
+		--build=$(DEB_BUILD_GNU_TYPE) \
+		--host=$(DEB_HOST_GNU_TYPE) \
+		--with-build-cc=gcc \
+		--prefix=/usr \
+		--without-shared \
+		--with-normal \
+		--without-debug \
+		--with-termlib=tinfo \
+		--without-progs \
+		--without-tests \
+		--without-cxx \
+		--without-cxx-binding \
+		--without-ada \
+		--without-manpages \
+		--disable-db-install \
+		--disable-stripping \
+		--disable-termcap \
+		--disable-root-access \
+		--disable-setuid-environ \
+		--enable-const \
+		--with-default-terminfo-dir=/etc/terminfo \
+		--with-terminfo-dirs="/etc/terminfo:/usr/share/terminfo:/lib/terminfo"
+	$(MAKE) -C $(NC_BUILD) libs
+	$(MAKE) -C $(NC_BUILD) install.libs DESTDIR=$(NC_ROOT)
+	test -f $(NC_ROOT)/usr/lib/libtinfo.a
+	touch $@
+
+# LIBTINFOW_* stand in for pkg-config's answer, so configure uses the static
+# library above and never a system libtinfo.
+override_dh_auto_configure: debian/ncurses-stamp
+	dh_auto_configure -- \
+		--enable-systemd \
+		--enable-jemalloc \
+		--enable-sixel \
+		LIBTINFOW_CFLAGS="-I$(NC_ROOT)/usr/include" \
+		LIBTINFOW_LIBS="$(NC_ROOT)/usr/lib/libtinfo.a"
+	grep -q -- '-DHAVE_TIPARM_S=1' Makefile
+
+override_dh_auto_test:
+	./tmux -V | grep -qx 'tmux $(DEB_VERSION_UPSTREAM)' || \
+		[ "$(DEB_BUILD_ARCH)" != "$(DEB_HOST_ARCH)" ]
+
+execute_after_dh_auto_install:
+	install -D -m 644 debian/shells \
+		debian/tmux/usr/share/debianutils/shells.d/tmux
+
+override_dh_installchangelogs:
+	dh_installchangelogs CHANGES
+
+# Runtime libraries are listed by hand in debian/control, with the t64
+# alternatives a jammy build's shlibs wouldn't produce.
+override_dh_shlibdeps:
+
+execute_after_dh_auto_clean:
+	rm -rf $(NC_BUILD) $(NC_ROOT) debian/ncurses-stamp

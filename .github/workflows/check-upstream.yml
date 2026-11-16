@@ -1,0 +1,67 @@
+name: Check for new tmux release
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: check-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # required to dispatch release.yml
+
+jobs:
+  check:
+    name: Compare upstream vs published
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect and dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          VERSION_INPUT="tmux_version"
+          UPSTREAM="tmux/tmux"
+
+          # tmux tags have no "v" prefix and may carry a letter (3.7c).
+          # releases/latest skips prereleases.
+          up_ver=$(gh api "repos/${UPSTREAM}/releases/latest" -q .tag_name)
+          if ! [[ "$up_ver" =~ ^[0-9]+\.[0-9]+[a-z]?$ ]]; then
+            echo "Unexpected upstream tag '${up_ver}'; aborting."
+            exit 1
+          fi
+          echo "Upstream: ${up_ver}"
+
+          # The release tarball is attached after the tag is published;
+          # wait for it, since build_src.sh downloads it.
+          assets=$(gh api "repos/${UPSTREAM}/releases/latest" -q '.assets[].name')
+          if ! grep -qx "tmux-${up_ver}.tar.gz" <<< "$assets"; then
+            echo "tmux-${up_ver}.tar.gz not attached yet; trying again next tick."
+            exit 0
+          fi
+
+          # Our latest published release is "<ver>+<build>"; 404 -> empty -> build it.
+          ours=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" -q .tag_name 2>/dev/null || echo "")
+          ours_ver="${ours%%+*}"
+          echo "Ours: ${ours:-<none>} -> ${ours_ver:-<none>}"
+
+          if [ "$up_ver" = "$ours_ver" ]; then
+            echo "Up to date."
+            exit 0
+          fi
+
+          # Don't dispatch a duplicate while a build is already running/queued.
+          active=$(gh run list --workflow=release.yml --json status \
+            -q '[.[] | select(.status == "in_progress" or .status == "queued")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "A release.yml run is already active ($active); skipping this tick."
+            exit 0
+          fi
+
+          echo "New release detected: ${ours_ver:-<none>} -> ${up_ver}. Dispatching build."
+          gh workflow run release.yml -f "${VERSION_INPUT}=${up_ver}" -f build_version=1 -f architecture=all

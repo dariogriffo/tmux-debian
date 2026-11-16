@@ -1,0 +1,38 @@
+Source: tmux
+Section: admin
+Priority: optional
+Maintainer: Dario Griffo <dariogriffo@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               bison,
+               pkgconf | pkg-config,
+               libevent-dev (>> 2.0.10),
+               libjemalloc-dev,
+               libsystemd-dev [linux-any]
+Standards-Version: 4.6.2
+Homepage: https://github.com/tmux/tmux
+Vcs-Browser: https://github.com/dariogriffo/tmux-debian
+Vcs-Git: https://github.com/dariogriffo/tmux-debian.git
+Rules-Requires-Root: no
+
+Package: tmux
+Architecture: amd64 arm64
+Depends: libc6 (>= 2.34),
+         libevent-core-2.1-7t64 | libevent-core-2.1-7 (>= 2.1.8-stable),
+         libjemalloc2 (>= 5.2.1),
+         libsystemd0,
+         ncurses-base,
+         ${misc:Depends}
+Description: terminal multiplexer (latest upstream release)
+ tmux enables a number of terminals (or windows) to be accessed and
+ controlled from a single terminal like screen. tmux runs as a
+ server-client system. A server is created automatically when necessary
+ and holds a number of sessions, each of which may have a number of
+ windows linked to it. Any number of clients may connect to a session,
+ or the server may be controlled by issuing commands with tmux.
+ .
+ This package tracks every tagged tmux release. It is compiled from
+ upstream's release tarball with systemd, jemalloc and sixel support, and
+ with ncurses' terminfo library linked statically so every terminal
+ feature works on old and new suites alike. It replaces the
+ distribution's tmux in place. Sessions already running keep the old
+ server until they exit or `tmux kill-server` is run.
